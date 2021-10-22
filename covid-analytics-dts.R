@@ -102,17 +102,12 @@ id_shp <- read_sf("data/IDN_adm1_new/IDN_adm1_new.shp")
 
 mobility_province <- id_mobility %>%
   filter(!is.na(sub_region_1)) %>%
-  filter(date == "2021-10-12") %>%
   select(date, province_name, retail_and_recreation, grocery_and_pharmacy, parks, residential, workplaces, transit_stations) %>%
-  add_column(value = apply(mobility_province[3:8], 1, sd) ) %>%
   mutate(province_name =  if_else(province_name == "DKI Jakarta", "Jakarta Raya",
                           if_else(province_name == "Daerah Istimewa Yogyakarta", "Yogyakarta",
                           if_else(province_name == "Kepulauan Bangka Belitung", "Bangka-Belitung",
                           if_else(province_name == "Papua Barat", "Irian Jaya Barat",
                                   province_name)))))
-
-id_shp <- id_shp %>%
-  left_join(mobility_province, by = c("NAME_1" = "province_name"))
 
 # Color Palette
 
@@ -141,7 +136,12 @@ province_stayput <-
     rename(
       time = date,
       value = stayput
-    )
+  ) %>%
+  mutate(province_name =  if_else(province_name == "Jakarta Raya", "DKI Jakarta",
+                          if_else(province_name == "Yogyakarta", "Daerah Istimewa Yogyakarta",
+                          if_else(province_name == "Bangka Belitung", "Kepulauan Bangka Belitung",
+                          if_else(province_name == "Irian Jaya Barat", "Papua Barat",
+                                  province_name)))))
 
 # Forecast Function ------------------------------------------------------
 
@@ -174,7 +174,7 @@ get_data_forecast <- function(df) {
 
 # Run Service ------------------------------------------------------------
 
-ui <- dashboardPage(
+ui <- dashboardPage( title="Covid-19 Monitoring Mobility",
   dashboardHeader(
     title = strong(uiOutput(outputId = "header")),
     uiOutput(outputId = "dts")
@@ -253,7 +253,15 @@ ui <- dashboardPage(
               side = "right",
               title = strong("Mobility Maps"),
               tabPanel("Maps",
-                 withSpinner(plotlyOutput('mobility_maps', height = "315px", width = "100%", inline = TRUE))
+                 selectInput("category_maps",label = NULL,
+                             choices = c("Grocery and Pharmacy" = "grocery_and_pharmacy",
+                                         "Retail and Recreation" = "retail_and_recreation",
+                                         "Parks" = "parks",
+                                         "Transit Stations" = "transit_stations",
+                                         "Workplaces" = "workplaces",
+                                         "Residential" = "residential" )),
+
+                 withSpinner(plotlyOutput('mobility_maps', height = "263px", width = "100%", inline = TRUE))
               ),
               tabPanel("Description", "Tab content 2")
            )
@@ -263,7 +271,7 @@ ui <- dashboardPage(
   )
 )
 
-server <- function(input, output) {
+server <- function(input, output, session) {
 
   output$header <- renderUI({
     HTML('<div class="flex"><i class="fa fa-virus role="presentation"></i> COVID-19</div>')
@@ -326,6 +334,14 @@ server <- function(input, output) {
     get_data_forecast(mobilities() %>% filter( time < input$date))
   })
 
+  mobility_maps_value <- reactive({
+    mobility_province_selected <- mobility_province %>% filter(date == input$date)
+    col_id <- which( colnames(mobility_province_selected) == input$category_maps )
+    mobility_province_selected <- mobility_province_selected %>% mutate(value = .[[col_id]])
+
+    return(id_shp %>% left_join(mobility_province_selected, by = c("NAME_1" = "province_name")))
+  })
+
   stayputs <- reactive({
     if (input$province == 'Indonesia') {
       id_stayput
@@ -337,21 +353,6 @@ server <- function(input, output) {
 
   stayput_predict <- reactive({
     get_data_forecast(stayputs() %>% filter( time < input$date))
-  })
-
-  output$casesplot <- renderDygraph({
-    cases_data <- xts(x = cases()$value, order.by = cases()$time)
-    cases_forecast <- xts(x = case_predict()$value, order.by = case_predict()$time)
-    data <- cbind(cases_data, cases_forecast)
-    dygraph(data)%>%
-      dySeries("cases_data", fillGraph = TRUE, stepPlot = TRUE, color = "dark") %>%
-      dySeries("cases_forecast", color = "red", strokePattern = "dashed") %>%
-      dyRangeSelector(height = 20, strokeColor = "dark", dateWindow = c(input$date - 3, Sys.Date())) %>%
-      dyEvent(input$date, "Policy Started", labelLoc = "bottom") %>%
-      dyHighlight(highlightSeriesOpts = list(strokeWidth = 1)) %>%
-      dyLegend(show = "follow") %>%
-      dyAxis("x", drawGrid = FALSE) %>%
-      dyAxis("y", label = "Cases Per Day")
   })
 
   output$grocery_and_pharmacy_box <- renderValueBox({
@@ -390,6 +391,21 @@ server <- function(input, output) {
     )
   })
 
+  output$casesplot <- renderDygraph({
+    cases_data <- xts(x = cases()$value, order.by = cases()$time)
+    cases_forecast <- xts(x = case_predict()$value, order.by = case_predict()$time)
+    data <- cbind(cases_data, cases_forecast)
+    dygraph(data)%>%
+      dySeries("cases_data", fillGraph = TRUE, stepPlot = TRUE, color = "dark") %>%
+      dySeries("cases_forecast", color = "red", strokePattern = "dashed") %>%
+      dyRangeSelector(height = 20, strokeColor = "dark", dateWindow = c(input$date - 20, input$date + 23)) %>%
+      dyEvent(input$date, "Policy Started", labelLoc = "bottom") %>%
+      dyHighlight(highlightSeriesOpts = list(strokeWidth = 1)) %>%
+      dyLegend(show = "follow") %>%
+      dyAxis("x", drawGrid = FALSE) %>%
+      dyAxis("y", label = "Cases Per Day")
+  })
+
   output$mobilityplot <- renderDygraph({
     mobilities_data <- xts(x = mobilities()$value, order.by = mobilities()$time)
     mobilities_forecast <- xts(x = mobility_predict()$value, order.by = mobility_predict()$time)
@@ -397,27 +413,12 @@ server <- function(input, output) {
     dygraph(data)%>%
       dySeries("mobilities_data", fillGraph = TRUE, color = "navy") %>%
       dySeries("mobilities_forecast", color = "red", strokePattern = "dashed") %>%
-      dyRangeSelector(height = 20, strokeColor = "blue", dateWindow = c(input$date - 3, Sys.Date())) %>%
+      dyRangeSelector(height = 20, strokeColor = "blue", dateWindow = c(input$date - 20, input$date + 23)) %>%
       dyEvent(input$date, "Policy Started", labelLoc = "bottom") %>%
       dyHighlight(highlightSeriesOpts = list(strokeWidth = 1)) %>%
       dyLegend(show = "follow") %>%
       dyAxis("x", drawGrid = FALSE) %>%
       dyAxis("y", label = input$category)
-  })
-
-  output$mobility_maps <- renderPlotly({
-    plot_ly(id_shp, color = ~value, split = ~NAME_1, span = I(1),
-            text = ~paste0("<b>", NAME_1, "</b><br>",
-                          "Grocery & Pharmacy <b>", grocery_and_pharmacy*100, "%</b><br>",
-                          "Retail & Recreation <b>", retail_and_recreation*100, "%</b> <br>",
-                          "Parks <b>", parks*100, "%</b> <br>",
-                          "Transit Stations <b>", transit_stations*100, "%</b><br>",
-                          "Workplaces <b>", workplaces*100, "%</b><br>",
-                          "Residentials <b>", residential*100, "%</b>"),
-            showlegend = FALSE, hoveron = "fills", hoverinfo = "text",
-            colors=pal(20), hoverlabel=list(bgcolor="white", bordercolor="navy")) %>%
-      colorbar(len=0.5, thickness=10, tickfont=list(size=8))
-
   })
 
   output$stayputplot <- renderDygraph({
@@ -427,12 +428,28 @@ server <- function(input, output) {
     dygraph(data)%>%
       dySeries("stayputs_data", fillGraph = TRUE, color = "green") %>%
       dySeries("stayputs_forecast", color = "red", strokePattern = "dashed") %>%
-      dyRangeSelector(height = 20, strokeColor = "green", dateWindow = c(input$date - 3, Sys.Date())) %>%
+      dyRangeSelector(height = 20, strokeColor = "green", dateWindow = c(input$date - 20, input$date + 23)) %>%
       dyEvent(input$date, "Policy Started", labelLoc = "bottom") %>%
       dyHighlight(highlightSeriesOpts = list(strokeWidth = 1)) %>%
       dyLegend(show = "follow") %>%
       dyAxis("x", drawGrid = FALSE) %>%
       dyAxis("y", label = "Stayput Index")
+  })
+
+  output$mobility_maps <- renderPlotly({
+    plot_ly(mobility_maps_value(), color = ~value, split = ~NAME_1, span = I(1),
+            text = ~paste0("<b>", NAME_1, "</b><br>",
+                           "Grocery & Pharmacy <b>", grocery_and_pharmacy*100, "%</b><br>",
+                           "Retail & Recreation <b>", retail_and_recreation*100, "%</b> <br>",
+                           "Parks <b>", parks*100, "%</b> <br>",
+                           "Transit Stations <b>", transit_stations*100, "%</b><br>",
+                           "Workplaces <b>", workplaces*100, "%</b><br>",
+                           "Residentials <b>", residential*100, "%</b>"),
+            showlegend = FALSE, hoveron = "fills", hoverinfo = "text",
+            colors=pal(20), hoverlabel=list(bgcolor="white", bordercolor="navy")) %>%
+      config(displayModeBar = F) %>%
+      colorbar(len=0.5, thickness=10, tickfont=list(size=8))
+
   })
 }
 
